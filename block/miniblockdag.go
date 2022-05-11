@@ -130,11 +130,12 @@ func (c *MiniBlocksCollection) GetAllKeys(height int64) (keys []MiniBlockKey) {
 	return
 }
 
-// check against miniblock collection
-func (c *MiniBlocksCollection) CompareMiniblocks(key MiniBlockKey, checkpoint []MiniBlock) bool {
-	var match uint8
+// check against miniblock collection. Currently for statistics only
+func (c *MiniBlocksCollection) CompareMiniblocks(key MiniBlockKey, checkpoint []MiniBlock) int {
+	var match int
 
 	collection := c.GetAllMiniBlocks(key)
+	c_len := len(collection)
 
 	for _, mbl := range checkpoint {
 		for j := range collection {
@@ -143,8 +144,5 @@ func (c *MiniBlocksCollection) CompareMiniblocks(key MiniBlockKey, checkpoint []
 			}
 		}
 	}
-	if (MINIBLOCK_LENGTH - match) > CP_MAX_DIFF {
-		return false
-	}
-	return true
+	return c_len - match
 }

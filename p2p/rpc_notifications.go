@@ -215,7 +215,23 @@ func (c *Connection) NotifyCheckpoint(request Objects, response *Dummy) (err err
 	key = request.MiniKey
 
 	if chain.Checkpoints.Exists(key) {
-		c.logger.V(2).Info("Notify checkpoint: Checkpoint skipped, already there")
+		c.logger.V(2).Info("Notify checkpoint: Checkpoint skipped, already there, but let's compare :)")
+		mbls_checkpoint := chain.Checkpoints.GetAllMiniBlocksFromCheckpoint(key)
+		var match uint8
+		var mbl block.MiniBlock
+		for i := range request.MiniBlocks {
+			if err = mbl.Deserialize(request.MiniBlocks[i]); err != nil {
+				c.logger.V(2).Info("Error occured, abort")
+				return nil
+			}
+			for j := range mbls_checkpoint {
+				if mbl == mbls_checkpoint[j] {
+					match++
+				}
+			}
+		}
+		c.logger.V(2).Info("Notify checkpoint", "Difference", block.MINIBLOCK_LENGTH-match)
+
 		return nil
 	}
 
@@ -236,21 +252,19 @@ func (c *Connection) NotifyCheckpoint(request Objects, response *Dummy) (err err
 	mbl_collection := chain.MiniBlocks.GetAllMiniBlocks(key)
 	if !chain.Checkpoints.VerifyCheckpoint(key, mbl_collection[0]) {
 		c.logger.V(2).Info("Notify checkpoint: Verification failed")
+		chain.Checkpoints.Lock()
 		chain.Checkpoints.Checkpoints[key] = nil
+		chain.Checkpoints.Unlock()
 		return nil
 	}
 
 	// check miniblocks against own collection. If difference is too big, skip
-	if !chain.MiniBlocks.CompareMiniblocks(key, chain.Checkpoints.GetAllMiniBlocksFromCheckpoint(key)) {
-		c.logger.V(2).Info("Notify checkpoint: Too many mismatches")
-		return nil
+	// Currently used for statistics. Checkpoint is stored.
+	if count := chain.MiniBlocks.CompareMiniblocks(key, chain.Checkpoints.GetAllMiniBlocksFromCheckpoint(key)); count != 0 {
+		c.logger.V(2).Info("Notify checkpoint", "Mismatches", count)
 	}
 
-	chain.MiniBlocks.Lock()
-	copy(chain.MiniBlocks.Collection[key], chain.Checkpoints.Checkpoints[key])
-	chain.MiniBlocks.Unlock()
-
-	c.logger.V(2).Info("Notify checkpoint: Checkpoint added to collection")
+	c.logger.V(2).Info("Notify checkpoint: Checkpoint added")
 
 	Broadcast_Checkpoint(key, chain.Checkpoints.GetAllMiniBlocksFromCheckpoint(key), c.Peer_ID) // do not send back to the original peer
 
