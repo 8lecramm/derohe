@@ -227,6 +227,7 @@ func (c *Connection) NotifyCheckpoint(request Objects, response *Dummy) (err err
 			for j := range mbls_checkpoint {
 				if mbl == mbls_checkpoint[j] {
 					match++
+					break
 				}
 			}
 		}
