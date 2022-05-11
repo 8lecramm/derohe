@@ -229,6 +229,10 @@ func main() {
 		p2p.Broadcast_MiniBlock(mbl, peerid)
 	}
 
+	chain.P2P_Checkpoint_Relayer = func(key block.MiniBlockKey, mbls []block.MiniBlock, peerid uint64) {
+		p2p.Broadcast_Checkpoint(key, mbls, peerid)
+	}
+
 	{
 		current_blid, err := chain.Load_Block_Topological_order_at_index(17600)
 		if err == nil {

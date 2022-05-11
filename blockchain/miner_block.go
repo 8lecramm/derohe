@@ -336,7 +336,7 @@ func (chain *Blockchain) Create_new_miner_block(miner_address rpc.Address) (cbl 
 	// select between collection and checkpoint. If miniblocks in collection rises to 9, switch back
 	if collection = chain.MiniBlocks.GetAllMiniBlocks(key); len(collection) < 9 && chain.Checkpoints.Exists(key) {
 		mbls = chain.Checkpoints.GetAllMiniBlocksFromCheckpoint(key)
-		logger.V(2).Info("selecting checkpoint for mining")
+		logger.V(1).Info("selecting checkpoint for mining")
 	} else {
 		if mbls = chain.MiniBlocks.GetAllMiniBlocks(key); len(mbls) > 0 {
 			logger.V(2).Info("selecting collection for mining")
