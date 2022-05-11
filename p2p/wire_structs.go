@@ -16,9 +16,13 @@
 
 package p2p
 
-import "fmt"
-import "strings"
-import "github.com/deroproject/derohe/cryptography/crypto"
+import (
+	"fmt"
+	"strings"
+
+	"github.com/deroproject/derohe/block"
+	"github.com/deroproject/derohe/cryptography/crypto"
+)
 
 // This file defines the structure for the protocol which is CBOR ( which is standard) stream multiplexed using yamux
 // stream multiplexing allows us have bidirection RPC using net/rpc
@@ -91,12 +95,13 @@ type ObjectList struct {
 }
 
 type Objects struct {
-	Common     Common_Struct    `cbor:"COMMON"`         // add all fields of Common
-	Sent       int64            `cbor:"SENT,omitempty"` // this is timestamp in microsecs only filled in notifications, and must be passed down
-	CBlocks    []Complete_Block `cbor:"CBLOCKS,omitempty"`
-	Txs        [][]byte         `cbor:"TXS,omitempty"`
-	MiniBlocks [][]byte         `cbor:"MBLS,omitempty"`   // miniblocks
-	Chunks     []Block_Chunk    `cbor:"CHUNKS,omitempty"` // all requested chunks are here
+	Common     Common_Struct      `cbor:"COMMON"`         // add all fields of Common
+	Sent       int64              `cbor:"SENT,omitempty"` // this is timestamp in microsecs only filled in notifications, and must be passed down
+	CBlocks    []Complete_Block   `cbor:"CBLOCKS,omitempty"`
+	Txs        [][]byte           `cbor:"TXS,omitempty"`
+	MiniBlocks [][]byte           `cbor:"MBLS,omitempty"`   // miniblocks
+	MiniKey    block.MiniBlockKey `cbor:"MINIKEY,omitempty` // miniblock key
+	Chunks     []Block_Chunk      `cbor:"CHUNKS,omitempty"` // all requested chunks are here
 }
 
 //  used to request what all changes are done by the block to the chain

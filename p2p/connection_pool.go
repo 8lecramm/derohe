@@ -20,30 +20,29 @@ package p2p
  * this will also ensure that a single IP is connected only once
  *
  */
-import "os"
-import "fmt"
-import "net"
-import "math"
-import "sync"
-import "sort"
-import "time"
-import "strings"
-import "strconv"
-import "context"
-import "sync/atomic"
-import "runtime/debug"
+import (
+	"context"
+	"fmt"
+	"math"
+	"net"
+	"os"
+	"runtime/debug"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 
-import "github.com/go-logr/logr"
-
-import "github.com/dustin/go-humanize"
-
-import "github.com/deroproject/derohe/block"
-import "github.com/deroproject/derohe/cryptography/crypto"
-import "github.com/deroproject/derohe/globals"
-import "github.com/deroproject/derohe/metrics"
-import "github.com/deroproject/derohe/transaction"
-
-import "github.com/cenkalti/rpc2"
+	"github.com/cenkalti/rpc2"
+	"github.com/deroproject/derohe/block"
+	"github.com/deroproject/derohe/cryptography/crypto"
+	"github.com/deroproject/derohe/globals"
+	"github.com/deroproject/derohe/metrics"
+	"github.com/deroproject/derohe/transaction"
+	"github.com/dustin/go-humanize"
+	"github.com/go-logr/logr"
+)
 
 // any connection incoming/outgoing can only be in this state
 //type Conn_State uint32
@@ -581,6 +580,63 @@ func broadcast_MiniBlock(mbl block.MiniBlock, PeerID uint64, first_seen int64) {
 	}
 	//rlog.Infof("Broadcasted block %s to %d peers", cbl.Bl.GetHash(), count)
 }
+
+// Broadcast checkpoint
+func Broadcast_Checkpoint(key block.MiniBlockKey, mbls []block.MiniBlock, PeerID uint64) {
+
+	defer globals.Recover(3)
+
+	var peer_specific_block Objects
+	peer_specific_block.MiniKey = key
+
+	for _, mbl := range chain.Checkpoints.Checkpoints[key] {
+		peer_specific_block.MiniBlocks = append(peer_specific_block.MiniBlocks, mbl.Serialize())
+	}
+
+	fill_common(&peer_specific_block.Common) // fill common info
+
+	our_height := chain.Get_Height()
+	// build the request once and dispatch it to all possible peers
+	count := 0
+	unique_map := UniqueConnections()
+
+	for _, v := range unique_map {
+		select {
+		case <-Exit_Event:
+			return
+		default:
+		}
+		if atomic.LoadUint32(&v.State) != HANDSHAKE_PENDING && PeerID != v.Peer_ID && v.Peer_ID != GetPeerID() { // skip pre-handshake connections
+
+			// if the other end is > 50 blocks behind, do not broadcast block to hime
+			// this is an optimisation, since if the other end is syncing
+			// every peer will keep on broadcasting and thus making it more lagging
+			// due to overheads
+			peer_height := atomic.LoadInt64(&v.Height)
+			if (our_height - peer_height) > 10 {
+				continue
+			}
+
+			count++
+			go func(connection *Connection) {
+				defer globals.Recover(3)
+
+				var dummy Dummy
+				if err := connection.Client.Call("Peer.NotifyCheckpoint", peer_specific_block, &dummy); err != nil {
+					return
+				}
+				connection.update(&dummy.Common) // update common information
+			}(v)
+		}
+
+	}
+	//rlog.Infof("Broadcasted block %s to %d peers", cbl.Bl.GetHash(), count)
+}
+
+// broad cast a block to all connected peers
+// we can only broadcast a block which is in our db
+// this function is trigger from 2 points, one when we receive a unknown block which can be successfully added to chain
+// second from the blockchain which has to relay locally  mined blocks as soon as possible
 
 // broadcast a new transaction, return to how many peers the transaction has been broadcasted
 // this function is trigger from 2 points, one when we receive a unknown tx

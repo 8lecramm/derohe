@@ -16,9 +16,11 @@
 
 package block
 
-import "fmt"
-import "sort"
-import "sync"
+import (
+	"fmt"
+	"sort"
+	"sync"
+)
 
 type MiniBlocksCollection struct {
 	Collection map[MiniBlockKey][]MiniBlock
@@ -126,4 +128,23 @@ func (c *MiniBlocksCollection) GetAllKeys(height int64) (keys []MiniBlockKey) {
 	})
 
 	return
+}
+
+// check against miniblock collection
+func (c *MiniBlocksCollection) CompareMiniblocks(key MiniBlockKey, checkpoint []MiniBlock) bool {
+	var match uint8
+
+	collection := c.GetAllMiniBlocks(key)
+
+	for _, mbl := range checkpoint {
+		for j := range collection {
+			if mbl == collection[j] {
+				match++
+			}
+		}
+	}
+	if (MINIBLOCK_LENGTH - match) > CP_MAX_DIFF {
+		return false
+	}
+	return true
 }

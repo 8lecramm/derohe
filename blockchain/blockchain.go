@@ -21,46 +21,45 @@ package blockchain
 // We must not call any packages that can call panic
 // NO Panics or FATALs please
 
-import "os"
-import "fmt"
-import "sync"
-import "time"
-import "bytes"
-import "runtime/debug"
-import "strings"
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"os"
+	"runtime"
+	"runtime/debug"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 
-import "runtime"
-import "context"
-import "golang.org/x/crypto/sha3"
-import "golang.org/x/sync/semaphore"
-import "github.com/go-logr/logr"
+	"github.com/go-logr/logr"
+	"golang.org/x/crypto/sha3"
+	"golang.org/x/sync/semaphore"
 
-import "sync/atomic"
-
-import "github.com/hashicorp/golang-lru"
-
-import "github.com/deroproject/derohe/rpc"
-import "github.com/deroproject/derohe/config"
-import "github.com/deroproject/derohe/cryptography/crypto"
-import "github.com/deroproject/derohe/errormsg"
-import "github.com/deroproject/derohe/metrics"
-
-import "github.com/deroproject/derohe/dvm"
-import "github.com/deroproject/derohe/block"
-import "github.com/deroproject/derohe/globals"
-import "github.com/deroproject/derohe/transaction"
-import "github.com/deroproject/derohe/blockchain/mempool"
-import "github.com/deroproject/derohe/blockchain/regpool"
-
-import "github.com/deroproject/graviton"
+	"github.com/deroproject/derohe/block"
+	"github.com/deroproject/derohe/blockchain/mempool"
+	"github.com/deroproject/derohe/blockchain/regpool"
+	"github.com/deroproject/derohe/config"
+	"github.com/deroproject/derohe/cryptography/crypto"
+	"github.com/deroproject/derohe/dvm"
+	"github.com/deroproject/derohe/errormsg"
+	"github.com/deroproject/derohe/globals"
+	"github.com/deroproject/derohe/metrics"
+	"github.com/deroproject/derohe/rpc"
+	"github.com/deroproject/derohe/transaction"
+	"github.com/deroproject/graviton"
+	lru "github.com/hashicorp/golang-lru"
+)
 
 // all components requiring access to blockchain must use , this struct to communicate
 // this structure must be update while mutex
 type Blockchain struct {
-	Store      storage                     // interface to storage layer
-	Top_ID     crypto.Hash                 // id of the top block
-	Pruned     int64                       // until where the chain has been pruned
-	MiniBlocks *block.MiniBlocksCollection // used for consensus
+	Store       storage                     // interface to storage layer
+	Top_ID      crypto.Hash                 // id of the top block
+	Pruned      int64                       // until where the chain has been pruned
+	MiniBlocks  *block.MiniBlocksCollection // used for consensus
+	Checkpoints *block.Checkpoint           // mining improvement
 
 	Tips map[crypto.Hash]crypto.Hash // current tips
 
@@ -88,12 +87,14 @@ type Blockchain struct {
 
 	simulator bool // is simulator mode
 
-	P2P_Block_Relayer     func(*block.Complete_Block, uint64) // tell p2p to broadcast any block this daemon hash found
-	P2P_MiniBlock_Relayer func(mbl block.MiniBlock, peerid uint64)
+	P2P_Block_Relayer      func(*block.Complete_Block, uint64) // tell p2p to broadcast any block this daemon hash found
+	P2P_MiniBlock_Relayer  func(mbl block.MiniBlock, peerid uint64)
+	P2P_Checkpoint_Relayer func(key block.MiniBlockKey, mbls []block.MiniBlock, peerid uint64)
 
 	RPC_NotifyNewBlock      *sync.Cond // used to notify rpc that a new block has been found
 	RPC_NotifyHeightChanged *sync.Cond // used to notify rpc that  chain height has changed due to addition of block
 	RPC_NotifyNewMiniBlock  *sync.Cond // used to notify rpc that a new mini block has been found
+	RPC_NotifyNewCheckpoint *sync.Cond // used to notify rpc that a new checkpoint has been found
 
 	Sync bool // whether the sync is active, used while bootstrapping
 
@@ -122,6 +123,7 @@ func Blockchain_Start(params map[string]interface{}) (*Blockchain, error) {
 	}
 	chain.Tips = map[crypto.Hash]crypto.Hash{}
 	chain.MiniBlocks = block.CreateMiniBlockCollection()
+	chain.Checkpoints = block.CreateCheckpoint()
 
 	var addr *rpc.Address
 	if params["--integrator-address"] == nil {
@@ -188,6 +190,7 @@ func Blockchain_Start(params map[string]interface{}) (*Blockchain, error) {
 	chain.RPC_NotifyNewBlock = sync.NewCond(&sync.Mutex{})      // used by dero daemon to notify all websockets that new block has arrived
 	chain.RPC_NotifyHeightChanged = sync.NewCond(&sync.Mutex{}) // used by dero daemon to notify all websockets that chain height has changed
 	chain.RPC_NotifyNewMiniBlock = sync.NewCond(&sync.Mutex{})  // used by dero daemon to notify all websockets that new miniblock has arrived
+	chain.RPC_NotifyNewCheckpoint = sync.NewCond(&sync.Mutex{}) // used by dero daemon to notify all websockets that new checkpoint has arrived
 
 	if !chain.Store.IsBalancesIntialized() {
 		logger.Info("Genesis block not in store, add it now")
@@ -1101,6 +1104,8 @@ func (chain *Blockchain) Add_Complete_Block(cbl *block.Complete_Block) (err erro
 
 	purge_count := chain.MiniBlocks.PurgeHeight(chain.Get_Stable_Height()) // purge all miniblocks upto this height
 	logger.V(2).Info("Purged miniblock", "count", purge_count)
+	cp_purge_count := chain.Checkpoints.PurgeHeight(chain.Get_Stable_Height()) // purge all miniblocks upto this height
+	logger.V(2).Info("Purged checkpoints", "count", cp_purge_count)
 
 	result = true
 

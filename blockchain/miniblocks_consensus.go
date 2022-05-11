@@ -16,17 +16,15 @@
 
 package blockchain
 
-import "fmt"
+import (
+	"encoding/binary"
+	"fmt"
 
-//import "time"
-
-import "encoding/binary"
-
-import "github.com/deroproject/derohe/block"
-import "github.com/deroproject/derohe/config"
-import "github.com/deroproject/derohe/cryptography/crypto"
-
-import "golang.org/x/crypto/sha3"
+	"github.com/deroproject/derohe/block"
+	"github.com/deroproject/derohe/config"
+	"github.com/deroproject/derohe/cryptography/crypto"
+	"golang.org/x/crypto/sha3"
+) //import "time"
 
 // last miniblock must be extra checked for corruption/attacks
 func (chain *Blockchain) Verify_MiniBlocks_HashCheck(cbl *block.Complete_Block) (err error) {
@@ -134,5 +132,18 @@ func (chain *Blockchain) InsertMiniBlock(mbl block.MiniBlock) (err error, result
 
 		chain.flip_top()
 	}
+
+	if config.Checkpoints {
+		// Create a checkpoint when miniblocks are complete and propagate them
+		if !chain.Checkpoints.Exists(mbl.GetKey()) {
+			if mbls := chain.MiniBlocks.GetAllMiniBlocks(mbl.GetKey()); len(mbls) >= 9 {
+				chain.Checkpoints.Lock()
+				chain.Checkpoints.Checkpoints[mbl.GetKey()] = append(chain.Checkpoints.Checkpoints[mbl.GetKey()], mbls...)
+				chain.Checkpoints.Unlock()
+				go chain.P2P_Checkpoint_Relayer(mbl.GetKey(), chain.Checkpoints.GetAllMiniBlocksFromCheckpoint(mbl.GetKey()), 0)
+			}
+		}
+	}
+
 	return err, result
 }

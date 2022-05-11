@@ -16,17 +16,22 @@
 
 package p2p
 
-import "fmt"
-import "sync/atomic"
-import "encoding/binary"
-import "time"
+import (
+	"encoding/binary"
+	"encoding/hex"
+	"fmt"
+	"sync/atomic"
+	"time"
 
-import "github.com/deroproject/derohe/block"
-import "github.com/deroproject/derohe/cryptography/crypto"
-import "github.com/deroproject/derohe/errormsg"
-import "github.com/deroproject/derohe/transaction"
-import "github.com/deroproject/derohe/metrics"
-import "github.com/deroproject/derohe/globals"
+	"github.com/deroproject/derohe/block"
+	"github.com/deroproject/derohe/cryptography/crypto"
+	"github.com/deroproject/derohe/errormsg"
+	"github.com/deroproject/derohe/globals"
+	"github.com/deroproject/derohe/metrics"
+	"github.com/deroproject/derohe/transaction"
+)
+
+var test uint8
 
 // handles notifications of inventory
 func (c *Connection) NotifyINV(request ObjectList, response *Dummy) (err error) {
@@ -196,6 +201,62 @@ func (c *Connection) NotifyMiniBlock(request Objects, response *Dummy) (err erro
 
 	fill_common(&response.Common)                         // fill common info
 	fill_common_T0T1T2(&request.Common, &response.Common) // fill time related information
+	return nil
+}
+
+// Checkpoint notification
+func (c *Connection) NotifyCheckpoint(request Objects, response *Dummy) (err error) {
+	defer handle_connection_panic(c)
+
+	fill_common_T1(&request.Common)
+	c.update(&request.Common) // update common information
+
+	var key block.MiniBlockKey
+	key = request.MiniKey
+
+	if chain.Checkpoints.Exists(key) {
+		c.logger.V(2).Info("Notify checkpoint: Checkpoint skipped, already there")
+		return nil
+	}
+
+	// perform basic checks
+	chain.Checkpoints.Lock()
+	for i := range request.MiniBlocks {
+		var mbl block.MiniBlock
+		c.logger.V(2).Info("Notify checkpoint", "mbl bytes", hex.EncodeToString(request.MiniBlocks[i]))
+		if err = mbl.Deserialize(request.MiniBlocks[i]); err != nil {
+			c.logger.V(2).Info("Notify checkpoint", "error deserialization", i)
+			chain.Checkpoints.Checkpoints[key] = nil
+			return nil
+		}
+		chain.Checkpoints.Checkpoints[key] = append(chain.Checkpoints.Checkpoints[key], mbl)
+	}
+	chain.Checkpoints.Unlock()
+
+	mbl_collection := chain.MiniBlocks.GetAllMiniBlocks(key)
+	if !chain.Checkpoints.VerifyCheckpoint(key, mbl_collection[0]) {
+		c.logger.V(2).Info("Notify checkpoint: Verification failed")
+		chain.Checkpoints.Checkpoints[key] = nil
+		return nil
+	}
+
+	// check miniblocks against own collection. If difference is too big, skip
+	if !chain.MiniBlocks.CompareMiniblocks(key, chain.Checkpoints.GetAllMiniBlocksFromCheckpoint(key)) {
+		c.logger.V(2).Info("Notify checkpoint: Too many mismatches")
+		return nil
+	}
+
+	chain.MiniBlocks.Lock()
+	copy(chain.MiniBlocks.Collection[key], chain.Checkpoints.Checkpoints[key])
+	chain.MiniBlocks.Unlock()
+
+	c.logger.V(2).Info("Notify checkpoint: Checkpoint added to collection")
+
+	Broadcast_Checkpoint(key, chain.Checkpoints.GetAllMiniBlocksFromCheckpoint(key), c.Peer_ID) // do not send back to the original peer
+
+	fill_common(&response.Common)                         // fill common info
+	fill_common_T0T1T2(&request.Common, &response.Common) // fill time related information
+
 	return nil
 }
 

@@ -16,29 +16,28 @@
 
 package blockchain
 
-import "fmt"
-import "bytes"
-import "sort"
-import "sync"
-import "runtime/debug"
-import "encoding/binary"
+import (
+	"bytes"
+	"encoding/binary"
+	"fmt"
+	"runtime/debug"
+	"sort"
+	"sync"
 
-import "golang.org/x/xerrors"
-import "golang.org/x/time/rate"
-import "golang.org/x/crypto/sha3"
+	"github.com/deroproject/derohe/block"
+	"github.com/deroproject/derohe/config"
+	"github.com/deroproject/derohe/cryptography/crypto"
+	"github.com/deroproject/derohe/errormsg"
+	"github.com/deroproject/derohe/globals"
+	"github.com/deroproject/derohe/rpc"
+	"github.com/deroproject/derohe/transaction"
+	"github.com/deroproject/graviton"
+	"golang.org/x/crypto/sha3"
+	"golang.org/x/time/rate"
+	"golang.org/x/xerrors"
+)
 
 // this file creates the blobs which can be used to mine new blocks
-
-import "github.com/deroproject/derohe/block"
-import "github.com/deroproject/derohe/config"
-import "github.com/deroproject/derohe/cryptography/crypto"
-import "github.com/deroproject/derohe/globals"
-import "github.com/deroproject/derohe/rpc"
-
-import "github.com/deroproject/derohe/errormsg"
-import "github.com/deroproject/derohe/transaction"
-
-import "github.com/deroproject/graviton"
 
 const TX_VALIDITY_HEIGHT = 11
 
@@ -331,12 +330,22 @@ func (chain *Blockchain) Create_new_miner_block(miner_address rpc.Address) (cbl 
 		key.Past1 = binary.BigEndian.Uint32(bl.Tips[1][:])
 	}
 
-	if mbls := chain.MiniBlocks.GetAllMiniBlocks(key); len(mbls) > 0 {
-		if uint64(len(mbls)) > config.BLOCK_TIME-config.MINIBLOCK_HIGHDIFF {
-			mbls = mbls[:config.BLOCK_TIME-config.MINIBLOCK_HIGHDIFF]
+	var collection []block.MiniBlock
+	var mbls []block.MiniBlock
+
+	// select between collection and checkpoint. If miniblocks in collection rises to 9, switch back
+	if collection = chain.MiniBlocks.GetAllMiniBlocks(key); len(collection) < 9 && chain.Checkpoints.Exists(key) {
+		mbls = chain.Checkpoints.GetAllMiniBlocksFromCheckpoint(key)
+		logger.V(2).Info("selecting checkpoint for mining")
+	} else {
+		if mbls = chain.MiniBlocks.GetAllMiniBlocks(key); len(mbls) > 0 {
+			logger.V(2).Info("selecting collection for mining")
+			if uint64(len(mbls)) > config.BLOCK_TIME-config.MINIBLOCK_HIGHDIFF {
+				mbls = mbls[:config.BLOCK_TIME-config.MINIBLOCK_HIGHDIFF]
+			}
 		}
-		bl.MiniBlocks = mbls
 	}
+	bl.MiniBlocks = mbls
 
 	cbl.Bl = &bl
 
