@@ -131,16 +131,16 @@ func (chain *Blockchain) InsertMiniBlock(mbl block.MiniBlock) (err error, result
 		chain.RPC_NotifyNewMiniBlock.L.Unlock()
 
 		chain.flip_top()
-	}
 
-	if config.Checkpoints {
-		// Create a checkpoint when miniblocks are complete and propagate them
-		if !chain.Checkpoints.Exists(mbl.GetKey()) {
-			if mbls := chain.MiniBlocks.GetAllMiniBlocks(mbl.GetKey()); len(mbls) >= 9 {
-				chain.Checkpoints.Lock()
-				chain.Checkpoints.Checkpoints[mbl.GetKey()] = append(chain.Checkpoints.Checkpoints[mbl.GetKey()], mbls...)
-				chain.Checkpoints.Unlock()
-				go chain.P2P_Checkpoint_Relayer(mbl.GetKey(), chain.Checkpoints.GetAllMiniBlocksFromCheckpoint(mbl.GetKey()), 0)
+		if config.Checkpoints {
+			// Create a checkpoint when miniblocks are complete and propagate them
+			if !chain.Checkpoints.Exists(mbl.GetKey()) {
+				if mbls := chain.MiniBlocks.GetAllMiniBlocks(mbl.GetKey()); len(mbls) >= 9 {
+					chain.Checkpoints.Lock()
+					chain.Checkpoints.Checkpoints[mbl.GetKey()] = append(chain.Checkpoints.Checkpoints[mbl.GetKey()], mbls...)
+					chain.Checkpoints.Unlock()
+					go chain.P2P_Checkpoint_Relayer(mbl.GetKey(), mbls, 0)
+				}
 			}
 		}
 	}
