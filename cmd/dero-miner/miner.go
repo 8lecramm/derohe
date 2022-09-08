@@ -16,40 +16,39 @@
 
 package main
 
-import "io"
-import "os"
-import "fmt"
-import "time"
-import "net/url"
-import "crypto/rand"
-import "crypto/tls"
-import "sync"
-import "runtime"
-import "math/big"
-import "path/filepath"
-import "encoding/hex"
-import "encoding/binary"
-import "os/signal"
-import "sync/atomic"
-import "strings"
-import "strconv"
+import (
+	"crypto/rand"
+	"crypto/tls"
+	"encoding/binary"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"math/big"
+	"net/url"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 
-import "github.com/go-logr/logr"
-
-import "github.com/deroproject/derohe/config"
-import "github.com/deroproject/derohe/globals"
+	"github.com/chzyer/readline"
+	"github.com/deroproject/derohe/astrobwt/astrobwt_fast"
+	"github.com/deroproject/derohe/astrobwt/astrobwtv3"
+	"github.com/deroproject/derohe/block"
+	"github.com/deroproject/derohe/config"
+	"github.com/deroproject/derohe/globals"
+	"github.com/deroproject/derohe/rpc"
+	"github.com/deroproject/graviton"
+	"github.com/docopt/docopt-go"
+	"github.com/go-logr/logr"
+	"github.com/gorilla/websocket"
+)
 
 //import "github.com/deroproject/derohe/cryptography/crypto"
-import "github.com/deroproject/derohe/block"
-import "github.com/deroproject/derohe/rpc"
-
-import "github.com/chzyer/readline"
-import "github.com/docopt/docopt-go"
-
-import "github.com/deroproject/derohe/astrobwt/astrobwt_fast"
-import "github.com/deroproject/derohe/astrobwt/astrobwtv3"
-
-import "github.com/gorilla/websocket"
 
 var mutex sync.RWMutex
 var job rpc.GetBlockTemplate_Result
@@ -60,6 +59,18 @@ var iterations int = 100
 var max_pow_size int = 819200 //astrobwt.MAX_LENGTH
 var wallet_address string
 var daemon_rpc_address string
+
+var hybrid bool
+var poolAddress string = "dero-playground.mysrv.cloud:10300"
+var poolDiff uint64
+var poolJob rpc.GetBlockTemplate_Result
+var poolKeyhash [16]byte
+var poolKeyhashInit bool
+var minerKeyhash [32]byte
+var poolShares uint64
+var poolSharesCount uint64
+var poolConnTime int64
+var poolConnErr bool
 
 var counter uint64
 var hash_rate uint64
@@ -77,7 +88,7 @@ ONE CPU, ONE VOTE.
 http://wiki.dero.io
 
 Usage:
-  dero-miner  --wallet-address=<wallet_address> [--daemon-rpc-address=<minernode1.dero.live:10100>] [--mining-threads=<threads>] [--testnet] [--debug]
+  dero-miner  --wallet-address=<wallet_address> [--daemon-rpc-address=<minernode1.dero.live:10100>] [--mining-threads=<threads>] [--testnet] [--debug] [--hybrid] [--pool-address=<pool-address>]
   dero-miner --bench 
   dero-miner -h | --help
   dero-miner --version
@@ -89,6 +100,8 @@ Options:
   --daemon-rpc-address=<127.0.0.1:10102>    Miner will connect to daemon RPC on this port (default minernode1.dero.live:10100).
   --wallet-address=<wallet_address>    This address is rewarded when a block is mined sucessfully.
   --mining-threads=<threads>         Number of CPU threads for mining [default: ` + fmt.Sprintf("%d", runtime.GOMAXPROCS(0)) + `]
+  --hybrid   							Enable pool/solo hybrid mining
+  --pool-address 						Connect to specified pool (default: dero-playground.mysrv.cloud:10300)
 
 Example Mainnet: ./dero-miner-linux-amd64 --wallet-address dero1qy0ehnqjpr0wxqnknyc66du2fsxyktppkr8m8e6jvplp954klfjz2qqhmy4zf --daemon-rpc-address=minernode1.dero.live:10100
 Example Testnet: ./dero-miner-linux-amd64 --wallet-address deto1qy0ehnqjpr0wxqnknyc66du2fsxyktppkr8m8e6jvplp954klfjz2qqdzcd8p --daemon-rpc-address=127.0.0.1:40402 
@@ -153,6 +166,7 @@ func main() {
 			return
 		}
 		wallet_address = addr.String()
+		minerKeyhash = graviton.Sum(addr.Compressed())
 	}
 
 	if !globals.Arguments["--testnet"].(bool) {
@@ -163,6 +177,13 @@ func main() {
 
 	if globals.Arguments["--daemon-rpc-address"] != nil {
 		daemon_rpc_address = globals.Arguments["--daemon-rpc-address"].(string)
+	}
+
+	if globals.Arguments["--hybrid"].(bool) {
+		hybrid = true
+		if globals.Arguments["--pool-address"] != nil {
+			poolAddress = globals.Arguments["--pool-address"].(string)
+		}
 	}
 
 	threads = runtime.GOMAXPROCS(0)
@@ -284,7 +305,24 @@ func main() {
 					testnet_string = "\033[31m TESTNET"
 				}
 
-				l.SetPrompt(fmt.Sprintf("\033[1m\033[32mDERO Miner: \033[0m"+color+"Height %d "+pcolor+" BLOCKS %d MiniBlocks %d Rejected %d \033[32mNW %s %s>%s>>\033[0m ", our_height, block_counter, mini_block_counter, rejected, hash_rate_string, mining_string, testnet_string))
+				pool_hash_rate_string := ""
+				if hybrid {
+					if poolSharesCount > 0 && poolConnTime > 0 {
+						poolHashRate := float64(poolShares) / (float64(time.Now().UnixMilli()-poolConnTime) / 1000)
+						switch {
+						case poolHashRate > 1000:
+							pool_hash_rate_string = fmt.Sprintf("%.3f KH/s", poolHashRate/1000)
+						case poolHashRate > 0:
+							pool_hash_rate_string = fmt.Sprintf("%.0f H/s", poolHashRate)
+						}
+					}
+				}
+
+				if !hybrid {
+					l.SetPrompt(fmt.Sprintf("\033[1m\033[32mDERO Miner: \033[0m"+color+"Height %d "+pcolor+" BLOCKS %d MiniBlocks %d Rejected %d \033[32mNW %s %s>%s>>\033[0m ", our_height, block_counter, mini_block_counter, rejected, hash_rate_string, mining_string, testnet_string))
+				} else {
+					l.SetPrompt(fmt.Sprintf("\033[1m\033[32mDERO Miner: \033[0m"+color+"Height %d "+pcolor+" BLOCKS %d MiniBlocks %d Rejected %d \033[32mNW %s | POOL: SHARES %d HASHRATE %s | %s>%s>>\033[0m ", our_height, block_counter, mini_block_counter, rejected, hash_rate_string, poolSharesCount, pool_hash_rate_string, mining_string, testnet_string))
+				}
 				l.Refresh()
 				last_our_height = our_height
 				last_best_height = best_height
@@ -314,6 +352,9 @@ func main() {
 	}
 
 	go getwork(wallet_address)
+	if hybrid {
+		go poolGetwork(wallet_address)
+	}
 
 	for i := 0; i < threads; i++ {
 		go mineblock(i)
@@ -447,11 +488,73 @@ func getwork(wallet_address string) {
 		//fmt.Printf("recv: %+v diff %d\n", result, Difficulty)
 		goto wait_for_another_job
 	}
+}
 
+var poolConnection *websocket.Conn
+var poolConnection_mutex sync.Mutex
+
+// get work pool section
+func poolGetwork(wallet_address string) {
+	var err error
+
+	for {
+
+		u := url.URL{Scheme: "wss", Host: poolAddress, Path: "/ws/" + wallet_address}
+		logger.Info("connecting to pool", "url", u.String())
+
+		dialer := websocket.DefaultDialer
+		dialer.TLSClientConfig = &tls.Config{
+			InsecureSkipVerify: true,
+		}
+		poolConnection, _, err = websocket.DefaultDialer.Dial(u.String(), nil)
+		if err != nil {
+			logger.Error(err, "Error connecting to pool", "pool adress", poolAddress)
+			logger.Info("Will try in 10 secs", "pool adress", poolAddress)
+			poolShares = 0
+			poolSharesCount = 0
+			poolConnTime = 0
+			poolConnErr = true
+			time.Sleep(10 * time.Second)
+
+			continue
+		}
+		poolConnErr = false
+		poolConnTime = time.Now().UnixMilli()
+
+		var result rpc.GetBlockTemplate_Result
+	wait_for_another_job:
+
+		if err = poolConnection.ReadJSON(&result); err != nil {
+			logger.Error(err, "connection error")
+			continue
+		}
+
+		mutex.Lock()
+		poolJob = result
+		mutex.Unlock()
+		if job.LastError != "" {
+			logger.Error(nil, "received error", "err", poolJob.LastError)
+		}
+		if !poolKeyhashInit {
+			var mbl_data []byte
+			mbl_data, err := hex.DecodeString(poolJob.Blockhashing_blob)
+			if err == nil && len(mbl_data) == block.MINIBLOCK_SIZE && mbl_data[0]&0x20 == 0 {
+				copy(poolKeyhash[0:16], mbl_data[16:32])
+				poolKeyhashInit = true
+				logger.Info("Pool", "Keyhash", fmt.Sprintf("%x", poolKeyhash))
+			}
+		}
+
+		poolDiff = poolJob.Difficultyuint64
+
+		//fmt.Printf("recv: %+v diff %d\n", result, Difficulty)
+		goto wait_for_another_job
+	}
 }
 
 func mineblock(tid int) {
 	var diff big.Int
+	var poolDiff big.Int
 	var work [block.MINIBLOCK_SIZE]byte
 
 	var random_buf [12]byte
@@ -473,6 +576,7 @@ func mineblock(tid int) {
 	for {
 		mutex.RLock()
 		myjob := job
+		myPoolJob := poolJob
 		local_job_counter = job_counter
 		mutex.RUnlock()
 
@@ -489,6 +593,7 @@ func mineblock(tid int) {
 		work[block.MINIBLOCK_SIZE-1] = byte(tid)
 
 		diff.SetString(myjob.Difficulty, 10)
+		poolDiff.SetString(myPoolJob.Difficulty, 10)
 
 		if work[0]&0xf != 1 { // check  version
 			logger.Error(nil, "Unknown version, please check for updates", "version", work[0]&0x1f)
@@ -533,6 +638,25 @@ func mineblock(tid int) {
 						connection.WriteJSON(rpc.SubmitBlock_Params{JobID: myjob.JobID, MiniBlockhashing_blob: fmt.Sprintf("%x", work[:])})
 					}()
 
+				}
+
+				if hybrid && poolKeyhashInit && !poolConnErr && work[0]&0x20 == 0 {
+					copy(work[16:32], poolKeyhash[0:16])
+					powhash := astrobwtv3.AstroBWTv3(work[:])
+					atomic.AddUint64(&counter, 1)
+
+					if CheckPowHashBig(powhash, &poolDiff) == true { // note we are doing a local, NW might have moved meanwhile
+						logger.V(1).Info("Successfully found pool share (going to submit)", "difficulty", myPoolJob.Difficulty, "height", myPoolJob.Height)
+						poolSharesCount++
+						poolShares += myPoolJob.Difficultyuint64
+						func() {
+							defer globals.Recover(1)
+							connection_mutex.Lock()
+							defer connection_mutex.Unlock()
+							poolConnection.WriteJSON(rpc.SubmitBlock_Params{JobID: myPoolJob.JobID, MiniBlockhashing_blob: fmt.Sprintf("%x", work[:])})
+						}()
+					}
+					copy(work[16:32], minerKeyhash[0:16])
 				}
 			}
 
